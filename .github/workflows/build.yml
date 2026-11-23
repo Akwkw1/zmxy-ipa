@@ -1,0 +1,86 @@
+name: Build IPA
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - name: Unpack
+        run: |
+          ZIP=$(ls *.zip | head -1)
+          echo "unpacking $ZIP"
+          mkdir -p src
+          unzip -q -o "$ZIP" -d src
+          ls -la src | head -20
+
+      - name: Build
+        run: |
+          cd src
+          set -o pipefail
+          PROJ=$(ls -d *.xcodeproj | head -1)
+          xcodebuild -list -project "$PROJ" || true
+          xcodebuild \
+            -project "$PROJ" -scheme ZMXY \
+            -configuration Release -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            clean build 2>&1 | tee build.log | tail -n 150
+
+      - name: Fix Info.plist
+        run: |
+          APP=$(find src/build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "app=$APP"
+          python3 - "$APP/Info.plist" <<'PY'
+          import plistlib, sys
+          p = sys.argv[1]
+          d = plistlib.load(open(p, 'rb'))
+          d.update({
+              'CFBundleExecutable': 'ZMXY',
+              'CFBundleIdentifier': 'com.yg.zmxy',
+              'CFBundlePackageType': 'APPL',
+              'CFBundleInfoDictionaryVersion': '6.0',
+              'CFBundleVersion': '1',
+              'CFBundleShortVersionString': '1.0',
+              'CFBundleSupportedPlatforms': ['iPhoneOS'],
+              'MinimumOSVersion': '15.0',
+              'UIDeviceFamily': [1, 2],
+              'LSRequiresIPhoneOS': True,
+              'UIRequiresFullScreen': True,
+              'UIStatusBarHidden': True,
+              'UIViewControllerBasedStatusBarAppearance': False,
+          })
+          d['UISupportedInterfaceOrientations'] = ['UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight']
+          d['UISupportedInterfaceOrientations~ipad'] = ['UIInterfaceOrientationLandscapeLeft','UIInterfaceOrientationLandscapeRight']
+          plistlib.dump(d, open(p, 'wb'))
+          print('--- fixed Info.plist ---')
+          for k, v in sorted(d.items()):
+              print(f'{k} = {v}')
+          PY
+
+      - name: Package
+        run: |
+          mkdir -p Payload
+          APP=$(find src/build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          if [ -z "$APP" ]; then echo "::error::no .app produced"; exit 1; fi
+          cp -R "$APP" Payload/
+          zip -qry ZMXY-unsigned.ipa Payload
+          ls -lh ZMXY-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ZMXY-unsigned-ipa
+          path: |
+            ZMXY-unsigned.ipa
+            src/build.log
+          if-no-files-found: warn
