@@ -2,8 +2,6 @@ name: Build IPA
 
 on:
   push:
-    paths:
-      - '*.zip'
   workflow_dispatch:
 
 jobs:
@@ -12,39 +10,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show toolchain
+      - name: Toolchain
         run: |
           xcodebuild -version
           sw_vers
 
-      - name: Unpack project
+      - name: Unpack
         run: |
           ZIP=$(ls *.zip | head -1)
           echo "unpacking $ZIP"
           mkdir -p src
           unzip -q -o "$ZIP" -d src
           ls -la src | head -20
-          du -sh src
 
       - name: Build
         run: |
           cd src
           set -o pipefail
+          PROJ=$(ls -d *.xcodeproj | head -1)
+          xcodebuild -list -project "$PROJ" || true
           xcodebuild \
-            -project ZMXY.xcodeproj \
-            -scheme ZMXY \
-            -configuration Release \
-            -sdk iphoneos \
+            -project "$PROJ" -scheme ZMXY \
+            -configuration Release -sdk iphoneos \
             -derivedDataPath build \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            clean build 2>&1 | tail -n 120
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            clean build 2>&1 | tee build.log | tail -n 150
 
-      - name: Package IPA
+      - name: Package
         run: |
           mkdir -p Payload
-          cp -R "src/build/Build/Products/Release-iphoneos/ZMXY.app" Payload/
+          APP=$(find src/build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          if [ -z "$APP" ]; then echo "::error::no .app produced"; exit 1; fi
+          cp -R "$APP" Payload/
           zip -qry ZMXY-unsigned.ipa Payload
           ls -lh ZMXY-unsigned.ipa
 
@@ -52,6 +49,7 @@ jobs:
         if: always()
         with:
           name: ZMXY-unsigned-ipa
-          path: ZMXY-unsigned.ipa
-          retention-days: 30
+          path: |
+            ZMXY-unsigned.ipa
+            src/build.log
           if-no-files-found: warn
